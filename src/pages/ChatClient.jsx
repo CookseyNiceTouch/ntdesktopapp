@@ -130,7 +130,7 @@ const ChatClient = () => {
       
       // Create message request options
       const requestOptions = {
-        model: "claude-3-5-sonnet-20241022",
+        model: "claude-3-5-haiku-20241022",
         max_tokens: 1000,
         system: "You are a helpful AI assistant. Respond concisely and accurately to the user's questions.",
         messages: [...conversationHistory, { role: 'user', content: query }],
