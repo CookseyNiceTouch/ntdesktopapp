@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import '../styles/ChatClient.css';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { WebSocketClientTransport } from '@modelcontextprotocol/sdk/client/websocket.js';
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 
 const ChatClient = () => {
   const { currentUser, logout } = useAuth();
@@ -12,7 +12,7 @@ const ChatClient = () => {
   }]);
   const [inputMessage, setInputMessage] = useState('');
   const [isConnected, setIsConnected] = useState(false);
-  const [serverUrl, setServerUrl] = useState('ws://localhost:8080');
+  const [serverUrl, setServerUrl] = useState('http://localhost:8080');
   const [isLoading, setIsLoading] = useState(false);
   const [availableTools, setAvailableTools] = useState([]);
   const messagesEndRef = useRef(null);
@@ -55,18 +55,36 @@ const ChatClient = () => {
     }
   }, []);
   
-  // Connect to an MCP server
+  // Connect to an MCP server using SSE
   const connectToServer = async (url) => {
     try {
       setIsLoading(true);
       
-      // Create MCP client with WebSocket transport
+      // Add a log to verify the URL
+      console.log(`Attempting to connect to MCP server at: ${url}`);
+      
+      // Create MCP client with SSE transport
       const mcp = new Client({ name: "nice-touch-chat", version: "1.0.0" });
-      const transport = new WebSocketClientTransport({
+      
+      // Configure SSE transport with additional options
+      const transport = new SSEClientTransport({
         url: url,
+        // Add additional options that might help with connection issues
+        withCredentials: false,
+        reconnectDelay: 1000,
+        timeout: 30000
       });
       
+      // Log before connecting
+      console.log("Initializing SSE transport connection...");
+      
+      // Connect and wait for connection to establish
       mcp.connect(transport);
+      
+      // Give the connection a moment to establish before trying commands
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      console.log("Connection established, requesting tool list...");
       
       // List available tools
       const toolsResult = await mcp.listTools();
@@ -77,6 +95,8 @@ const ChatClient = () => {
           input_schema: tool.inputSchema,
         };
       });
+      
+      console.log(`Got tools: ${JSON.stringify(tools.map(t => t.name))}`);
       
       setAvailableTools(tools);
       mcpClientRef.current = mcp;
@@ -90,9 +110,22 @@ const ChatClient = () => {
       
     } catch (error) {
       console.error("Failed to connect to MCP server:", error);
+      
+      // More detailed error message
+      let errorMessage = error.message || "Unknown error";
+      
+      // Check for common issues
+      if (errorMessage.includes("Not connected")) {
+        errorMessage = "Failed to establish connection to the server. Make sure the server is running and supports SSE connections.";
+      } else if (errorMessage.includes("CORS")) {
+        errorMessage = "CORS error: The server doesn't allow connections from this origin. The server must have CORS headers configured.";
+      } else if (errorMessage.includes("SyntaxError")) {
+        errorMessage = "The server response couldn't be parsed. Check that the server implements the MCP protocol correctly.";
+      }
+      
       setMessages(prev => [...prev, {
         role: 'system',
-        content: `Error connecting to server: ${error.message}`
+        content: `Error connecting to server: ${errorMessage}`
       }]);
     } finally {
       setIsLoading(false);
@@ -329,7 +362,7 @@ const ChatClient = () => {
                 type="text"
                 value={serverUrl}
                 onChange={(e) => setServerUrl(e.target.value)}
-                placeholder="Enter MCP server URL (ws://...)"
+                placeholder="Enter MCP server URL (http://...)"
                 className="server-input"
                 disabled={isLoading}
               />
