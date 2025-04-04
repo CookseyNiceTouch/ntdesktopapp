@@ -4,6 +4,7 @@ import started from 'electron-squirrel-startup';
 import ElectronStore from 'electron-store';
 import { ipcMain } from 'electron';
 import { setupAnthropicHandlers } from './electron/anthropic';
+import { setupMCPHandlers, cleanupMCPClients } from './electron/mcp';
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
@@ -66,6 +67,9 @@ app.whenReady().then(() => {
   // Setup Anthropic handlers
   setupAnthropicHandlers();
   
+  // Setup MCP handlers
+  setupMCPHandlers();
+  
   createWindow();
 
   // On OS X it's common to re-create a window in the app when the
@@ -84,6 +88,11 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+// Add this to handle cleanup on exit
+app.on('before-quit', () => {
+  cleanupMCPClients();
 });
 
 // In this file you can include the rest of your app's specific main process

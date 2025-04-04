@@ -1,8 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import '../styles/ChatClient.css';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 
 const ChatClient = () => {
   const { currentUser, logout } = useAuth();
@@ -12,13 +10,13 @@ const ChatClient = () => {
   }]);
   const [inputMessage, setInputMessage] = useState('');
   const [isConnected, setIsConnected] = useState(false);
-  const [serverUrl, setServerUrl] = useState('http://localhost:8080');
+  const [serverPath, setServerPath] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [availableTools, setAvailableTools] = useState([]);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
   const [anthropicInitialized, setAnthropicInitialized] = useState(false);
-  const timeoutRef = useRef(null); // Add timeout ref for cleanup
+  const timeoutRef = useRef(null);
   
   // MCP client
   const mcpClientRef = useRef(null);
@@ -49,94 +47,79 @@ const ChatClient = () => {
     
     initAnthropic();
     
-    // Focus input field on initial load
     if (inputRef.current) {
       inputRef.current.focus();
     }
   }, []);
   
-  // Connect to an MCP server using SSE
-  const connectToServer = async (url) => {
+  // Connect to an MCP server using Stdio transport
+  const connectToServer = async (scriptPath) => {
     try {
       setIsLoading(true);
       
-      // Add a log to verify the URL
-      console.log(`Attempting to connect to MCP server at: ${url}`);
+      console.log(`Launching MCP server from path: ${scriptPath}`);
       
-      // Create MCP client with SSE transport
-      const mcp = new Client({ name: "nice-touch-chat", version: "1.0.0" });
+      // Generate a unique client ID
+      const clientId = `mcp_client_${Date.now()}`;
       
-      // Configure SSE transport with additional options
-      const transport = new SSEClientTransport({
-        url: url,
-        // Add additional options that might help with connection issues
-        withCredentials: false,
-        reconnectDelay: 1000,
-        timeout: 30000
+      // Launch the server via Electron IPC
+      const result = await window.electronMCP.launchServer({
+        serverPath: scriptPath,
+        clientId
       });
       
-      // Log before connecting
-      console.log("Initializing SSE transport connection...");
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to launch MCP server');
+      }
       
-      // Connect and wait for connection to establish
-      mcp.connect(transport);
+      console.log(`Server launched successfully with tools:`, result.tools);
       
-      // Give the connection a moment to establish before trying commands
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      console.log("Connection established, requesting tool list...");
-      
-      // List available tools
-      const toolsResult = await mcp.listTools();
-      const tools = toolsResult.tools.map((tool) => {
-        return {
-          name: tool.name,
-          description: tool.description,
-          input_schema: tool.inputSchema,
-        };
-      });
-      
-      console.log(`Got tools: ${JSON.stringify(tools.map(t => t.name))}`);
-      
-      setAvailableTools(tools);
-      mcpClientRef.current = mcp;
+      setAvailableTools(result.tools);
       setIsConnected(true);
+      
+      // Store client ID for later use
+      mcpClientRef.current = { clientId };
       
       // Add system message about connection
       setMessages(prev => [...prev, {
         role: 'system',
-        content: `Connected to server with tools: ${tools.map(t => t.name).join(', ')}`
+        content: `Connected to MCP server with tools: ${result.tools.map(t => t.name).join(', ')}`
       }]);
       
     } catch (error) {
       console.error("Failed to connect to MCP server:", error);
-      
-      // More detailed error message
-      let errorMessage = error.message || "Unknown error";
-      
-      // Check for common issues
-      if (errorMessage.includes("Not connected")) {
-        errorMessage = "Failed to establish connection to the server. Make sure the server is running and supports SSE connections.";
-      } else if (errorMessage.includes("CORS")) {
-        errorMessage = "CORS error: The server doesn't allow connections from this origin. The server must have CORS headers configured.";
-      } else if (errorMessage.includes("SyntaxError")) {
-        errorMessage = "The server response couldn't be parsed. Check that the server implements the MCP protocol correctly.";
-      }
-      
       setMessages(prev => [...prev, {
         role: 'system',
-        content: `Error connecting to server: ${errorMessage}`
+        content: `Error connecting to server: ${error.message}`
       }]);
     } finally {
       setIsLoading(false);
-      // Focus input field after connecting
       if (inputRef.current) {
         inputRef.current.focus();
       }
     }
   };
   
-  // Process query using Anthropic without streaming
+  // Call MCP tool via Electron IPC
+  const callMCPTool = async (toolName, toolArgs) => {
+    if (!mcpClientRef.current || !mcpClientRef.current.clientId) {
+      throw new Error('No active MCP connection');
+    }
+    
+    const result = await window.electronMCP.callTool({
+      clientId: mcpClientRef.current.clientId,
+      name: toolName,
+      args: toolArgs
+    });
+    
+    if (!result.success) {
+      throw new Error(result.error || 'Tool execution failed');
+    }
+    
+    return result.result;
+  };
+  
+  // Process query using Anthropic without streaming (modified for Stdio transport)
   const processQuery = async (query) => {
     if (!anthropicInitialized) {
       setMessages(prev => [...prev, {
@@ -155,7 +138,7 @@ const ChatClient = () => {
       // Get previous conversation messages for context
       const conversationHistory = messages
         .filter(msg => msg.role === 'user' || msg.role === 'assistant')
-        .slice(-4)  // Last 4 messages for context
+        .slice(-4)
         .map(msg => ({
           role: msg.role,
           content: msg.content
@@ -167,7 +150,7 @@ const ChatClient = () => {
         max_tokens: 1000,
         system: "You are a helpful AI assistant. Respond concisely and accurately to the user's questions.",
         messages: [...conversationHistory, { role: 'user', content: query }],
-        stream: false, // Disable streaming
+        stream: false,
       };
       
       // Only include tools if connected to an MCP server
@@ -221,11 +204,8 @@ const ChatClient = () => {
                   content: `Calling tool: ${toolName} with args: ${JSON.stringify(toolArgs)}`
                 }]);
                 
-                // Call the tool via MCP
-                mcpClientRef.current.callTool({
-                  name: toolName,
-                  arguments: toolArgs,
-                }).then(result => {
+                // Call the tool via MCP (now using our callMCPTool helper)
+                callMCPTool(toolName, toolArgs).then(result => {
                   // Add tool result to chat
                   setMessages(prev => [...prev, { 
                     role: 'system', 
@@ -306,7 +286,6 @@ const ChatClient = () => {
       }]);
       setIsLoading(false);
     } finally {
-      // Focus input field after processing
       setTimeout(() => {
         if (inputRef.current) {
           inputRef.current.focus();
@@ -327,14 +306,26 @@ const ChatClient = () => {
   // Handle connect to server
   const handleConnect = (e) => {
     e.preventDefault();
-    if (serverUrl.trim() === '') return;
+    if (serverPath.trim() === '') return;
     
-    connectToServer(serverUrl);
+    connectToServer(serverPath);
   };
 
   // Handle logout
   const handleLogout = async () => {
     await logout();
+  };
+  
+  // Handle file selection
+  const handleFileSelect = async () => {
+    try {
+      const result = await window.electronMCP.selectServerFile();
+      if (result.success && result.filePath) {
+        setServerPath(result.filePath);
+      }
+    } catch (error) {
+      console.error("Error selecting file:", error);
+    }
   };
   
   // Scroll to bottom when messages change
@@ -345,8 +336,8 @@ const ChatClient = () => {
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (mcpClientRef.current) {
-        mcpClientRef.current.close();
+      if (mcpClientRef.current && mcpClientRef.current.clientId) {
+        window.electronMCP.closeClient({ clientId: mcpClientRef.current.clientId });
       }
     };
   }, []);
@@ -358,20 +349,30 @@ const ChatClient = () => {
         <div className="header-controls">
           {!isConnected ? (
             <form onSubmit={handleConnect} className="server-form">
-              <input
-                type="text"
-                value={serverUrl}
-                onChange={(e) => setServerUrl(e.target.value)}
-                placeholder="Enter MCP server URL (http://...)"
-                className="server-input"
-                disabled={isLoading}
-              />
+              <div className="file-input-container">
+                <input
+                  type="text"
+                  value={serverPath}
+                  onChange={(e) => setServerPath(e.target.value)}
+                  placeholder="Enter path to MCP server script (.js or .py)"
+                  className="server-input"
+                  disabled={isLoading}
+                />
+                <button 
+                  type="button"
+                  onClick={handleFileSelect}
+                  className="browse-button"
+                  disabled={isLoading}
+                >
+                  Browse
+                </button>
+              </div>
               <button 
                 type="submit" 
                 className="connect-button"
                 disabled={isLoading}
               >
-                Connect to Tools
+                Launch Server
               </button>
             </form>
           ) : (
@@ -379,9 +380,12 @@ const ChatClient = () => {
               <span className="connection-status">Connected to MCP Server</span>
               <button 
                 onClick={() => {
-                  mcpClientRef.current?.close();
+                  if (mcpClientRef.current && mcpClientRef.current.clientId) {
+                    window.electronMCP.closeClient({ clientId: mcpClientRef.current.clientId });
+                  }
                   setIsConnected(false);
                   setAvailableTools([]);
+                  mcpClientRef.current = null;
                 }}
                 className="disconnect-button"
               >

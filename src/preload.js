@@ -81,3 +81,23 @@ contextBridge.exposeInMainWorld('electronAnthropic', {
     };
   }
 });
+
+// Expose MCP API to renderer process
+contextBridge.exposeInMainWorld('electronMCP', {
+  launchServer: (options) => {
+    console.log('[PRELOAD] Launching MCP server:', options);
+    return ipcRenderer.invoke('mcp:launchServer', options);
+  },
+  selectServerFile: () => {
+    console.log('[PRELOAD] Selecting server file');
+    return ipcRenderer.invoke('mcp:selectServerFile');
+  },
+  callTool: (options) => {
+    console.log('[PRELOAD] Calling MCP tool:', options);
+    return ipcRenderer.invoke('mcp:callTool', options);
+  },
+  closeClient: (options) => {
+    console.log('[PRELOAD] Closing MCP client:', options);
+    return ipcRenderer.invoke('mcp:closeClient', options);
+  }
+});
