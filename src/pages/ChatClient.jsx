@@ -18,6 +18,7 @@ const ChatClient = () => {
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
   const [anthropicInitialized, setAnthropicInitialized] = useState(false);
+  const timeoutRef = useRef(null); // Add timeout ref for cleanup
   
   // MCP client
   const mcpClientRef = useRef(null);
@@ -102,7 +103,7 @@ const ChatClient = () => {
     }
   };
   
-  // Process query using Anthropic and handle tool calls
+  // Process query using Anthropic without streaming
   const processQuery = async (query) => {
     if (!anthropicInitialized) {
       setMessages(prev => [...prev, {
@@ -118,16 +119,22 @@ const ChatClient = () => {
       // Add user message to chat
       setMessages(prev => [...prev, { role: 'user', content: query }]);
       
-      // Format conversation for Claude
-      const messageHistory = [
-        { role: 'user', content: query }
-      ];
+      // Get previous conversation messages for context
+      const conversationHistory = messages
+        .filter(msg => msg.role === 'user' || msg.role === 'assistant')
+        .slice(-4)  // Last 4 messages for context
+        .map(msg => ({
+          role: msg.role,
+          content: msg.content
+        }));
       
-      // Get response from Claude (with tools if connected to server)
+      // Create message request options
       const requestOptions = {
         model: "claude-3-5-sonnet-20241022",
         max_tokens: 1000,
-        messages: messageHistory,
+        system: "You are a helpful AI assistant. Respond concisely and accurately to the user's questions.",
+        messages: [...conversationHistory, { role: 'user', content: query }],
+        stream: false, // Disable streaming
       };
       
       // Only include tools if connected to an MCP server
@@ -135,86 +142,137 @@ const ChatClient = () => {
         requestOptions.tools = availableTools;
       }
       
-      // Use IPC to create message via main process
-      const result = await window.electronAnthropic.createMessage(requestOptions);
+      // Display "processing" message
+      const processingId = `processing_${Date.now()}`;
+      setMessages(prev => [...prev, { 
+        role: 'assistant', 
+        content: 'Processing your request...',
+        id: processingId
+      }]);
       
-      if (!result.success) {
-        throw new Error(result.error);
+      console.log('Sending non-streaming request:', requestOptions);
+      
+      // Send request to Claude without streaming
+      const response = await window.electronAnthropic.createMessage(requestOptions);
+      
+      if (!response.success) {
+        throw new Error(response.error || 'Unknown error calling Anthropic API');
       }
       
-      const response = result.data;
-      
-      // Process response content
-      for (const content of response.content) {
-        if (content.type === 'text') {
-          // Add assistant message to chat
-          setMessages(prev => [...prev, { 
-            role: 'assistant', 
-            content: content.text 
-          }]);
-        } else if (content.type === 'tool_use' && isConnected && mcpClientRef.current) {
-          const toolName = content.name;
-          const toolArgs = content.input || {};
+      // Replace processing message with actual response
+      setMessages(prev => {
+        const newMessages = [...prev];
+        const processingIndex = newMessages.findIndex(msg => msg.id === processingId);
+        
+        if (processingIndex !== -1) {
+          // If there's a tool use, handle it
+          if (response.data.content && response.data.content.length > 0 && 
+              response.data.content[0].type === 'tool_use') {
+            
+            const toolUse = response.data.content[0];
+            const toolName = toolUse.name;
+            const toolArgs = toolUse.input || {};
+            
+            // Update assistant message to show tool use
+            newMessages[processingIndex] = {
+              role: 'assistant',
+              content: `Using tool: ${toolName} with input: ${JSON.stringify(toolArgs, null, 2)}`
+            };
+            
+            // Call the tool in the next tick
+            setTimeout(() => {
+              if (isConnected && mcpClientRef.current) {
+                // Add tool call message
+                setMessages(prev => [...prev, { 
+                  role: 'system', 
+                  content: `Calling tool: ${toolName} with args: ${JSON.stringify(toolArgs)}`
+                }]);
+                
+                // Call the tool via MCP
+                mcpClientRef.current.callTool({
+                  name: toolName,
+                  arguments: toolArgs,
+                }).then(result => {
+                  // Add tool result to chat
+                  setMessages(prev => [...prev, { 
+                    role: 'system', 
+                    content: `Tool result: ${JSON.stringify(result.content)}`
+                  }]);
+                  
+                  // Send tool result back to Claude for final response
+                  const toolResultMessages = [
+                    { role: 'user', content: query },
+                    {
+                      role: 'assistant',
+                      content: [{ type: 'tool_use', name: toolName, input: toolArgs }]
+                    },
+                    {
+                      role: 'user',
+                      content: result.content,
+                    }
+                  ];
+                  
+                  // Process final response after tool call
+                  window.electronAnthropic.createMessage({
+                    model: "claude-3-5-sonnet-20241022",
+                    max_tokens: 1000,
+                    messages: toolResultMessages,
+                  }).then(finalResponse => {
+                    if (finalResponse.success) {
+                      setMessages(prev => [...prev, { 
+                        role: 'assistant', 
+                        content: finalResponse.data.content[0].text
+                      }]);
+                    } else {
+                      throw new Error(finalResponse.error || 'Error getting final response');
+                    }
+                  }).catch(error => {
+                    console.error('Error getting final response:', error);
+                    setMessages(prev => [...prev, {
+                      role: 'system',
+                      content: `Error getting final response: ${error.message}`
+                    }]);
+                  }).finally(() => {
+                    setIsLoading(false);
+                  });
+                }).catch(error => {
+                  console.error('Error calling tool:', error);
+                  setMessages(prev => [...prev, {
+                    role: 'system',
+                    content: `Error calling tool: ${error.message}`
+                  }]);
+                  setIsLoading(false);
+                });
+              }
+            }, 0);
+            
+            return newMessages;
+          }
           
-          // Add tool call message
-          setMessages(prev => [...prev, { 
-            role: 'system', 
-            content: `Calling tool: ${toolName} with args: ${JSON.stringify(toolArgs)}`
-          }]);
-          
-          // Call the tool via MCP
-          const result = await mcpClientRef.current.callTool({
-            name: toolName,
-            arguments: toolArgs,
-          });
-          
-          // Add tool result to chat
-          setMessages(prev => [...prev, { 
-            role: 'system', 
-            content: `Tool result: ${JSON.stringify(result.content)}`
-          }]);
-          
-          // Send tool result back to Claude for final response
-          messageHistory.push({
+          // Normal text response
+          newMessages[processingIndex] = {
             role: 'assistant',
-            content: [{ type: 'tool_use', name: toolName, input: toolArgs }]
-          });
-          
-          messageHistory.push({
-            role: 'user',
-            content: result.content,
-          });
-          
-          // Use IPC for the final response too
-          const finalResult = await window.electronAnthropic.createMessage({
-            model: "claude-3-5-sonnet-20241022",
-            max_tokens: 1000,
-            messages: messageHistory,
-          });
-          
-          if (!finalResult.success) {
-            throw new Error(finalResult.error);
-          }
-          
-          const finalResponse = finalResult.data;
-          
-          // Add final response to chat
-          if (finalResponse.content[0]?.type === 'text') {
-            setMessages(prev => [...prev, { 
-              role: 'assistant', 
-              content: finalResponse.content[0].text 
-            }]);
-          }
+            content: response.data.content[0].text
+          };
         }
+        
+        return newMessages;
+      });
+      
+      // If no tool use, we're done
+      if (!response.data.content || response.data.content.length === 0 || 
+          response.data.content[0].type !== 'tool_use') {
+        setIsLoading(false);
       }
+      
     } catch (error) {
       console.error("Error processing query:", error);
       setMessages(prev => [...prev, {
         role: 'system',
         content: `Error: ${error.message}`
       }]);
-    } finally {
       setIsLoading(false);
+    } finally {
       // Focus input field after processing
       setTimeout(() => {
         if (inputRef.current) {
