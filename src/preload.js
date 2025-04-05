@@ -93,8 +93,17 @@ contextBridge.exposeInMainWorld('electronMCP', {
     return ipcRenderer.invoke('mcp:selectServerFile');
   },
   callTool: (options) => {
-    console.log('[PRELOAD] Calling MCP tool:', options);
-    return ipcRenderer.invoke('mcp:callTool', options);
+    console.log('[PRELOAD] Calling MCP tool:', JSON.stringify(options, null, 2));
+    const promise = ipcRenderer.invoke('mcp:callTool', options);
+    // Add a then/catch to log the result/error before returning the promise
+    promise.then(result => {
+      console.log('[PRELOAD] MCP tool result:', JSON.stringify(result, null, 2));
+      return result;
+    }).catch(err => {
+      console.error('[PRELOAD] MCP tool error:', err);
+      throw err;
+    });
+    return promise;
   },
   closeClient: (options) => {
     console.log('[PRELOAD] Closing MCP client:', options);

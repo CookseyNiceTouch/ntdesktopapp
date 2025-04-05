@@ -171,6 +171,9 @@ const ChatClient = () => {
       // Send request to Claude without streaming
       const response = await window.electronAnthropic.createMessage(requestOptions);
       
+      // Add more detailed logging for the initial response
+      console.log('Initial Claude response full data:', response);
+      
       if (!response.success) {
         throw new Error(response.error || 'Unknown error calling Anthropic API');
       }
@@ -184,6 +187,8 @@ const ChatClient = () => {
           // If there's a tool use, handle it
           if (response.data.content && response.data.content.length > 0 && 
               response.data.content[0].type === 'tool_use') {
+            
+            console.log('TOOL USE DETECTED:', response.data.content[0]);
             
             const toolUse = response.data.content[0];
             const toolName = toolUse.name;
@@ -206,14 +211,32 @@ const ChatClient = () => {
                 
                 // Call the tool via MCP (now using our callMCPTool helper)
                 callMCPTool(toolName, toolArgs).then(result => {
+                  console.log('=== MCP TOOL RESULT ===');
+                  console.log(JSON.stringify(result, null, 2));
+                  
                   // Add tool result to chat
                   setMessages(prev => [...prev, { 
                     role: 'system', 
                     content: `Tool result: ${JSON.stringify(result.content)}`
                   }]);
                   
+                  // Format the tool result properly for Claude
+                  let formattedToolResult;
+                  try {
+                    // Ensure result is properly formatted for Claude
+                    if (typeof result.content === 'string') {
+                      formattedToolResult = result.content;
+                    } else {
+                      formattedToolResult = JSON.stringify(result.content);
+                    }
+                  } catch (err) {
+                    console.error('Error formatting tool result:', err);
+                    formattedToolResult = String(result.content);
+                  }
+                  
                   // Send tool result back to Claude for final response
                   const toolResultMessages = [
+                    ...conversationHistory,
                     { role: 'user', content: query },
                     {
                       role: 'assistant',
@@ -221,33 +244,97 @@ const ChatClient = () => {
                     },
                     {
                       role: 'user',
-                      content: result.content,
+                      content: [{ 
+                        type: 'tool_result', 
+                        tool_name: toolName, 
+                        content: formattedToolResult
+                      }]
                     }
                   ];
                   
-                  // Process final response after tool call
-                  window.electronAnthropic.createMessage({
-                    model: "claude-3-5-sonnet-20241022",
+                  console.log('Sending tool result to Claude:', toolResultMessages);
+                  
+                  // Process final response after tool call with timeout
+                  const finalPromise = window.electronAnthropic.createMessage({
+                    model: "claude-3-5-haiku-20241022",
                     max_tokens: 1000,
+                    system: "You are a helpful AI assistant. Respond concisely and accurately to the user's questions.",
                     messages: toolResultMessages,
-                  }).then(finalResponse => {
-                    if (finalResponse.success) {
-                      setMessages(prev => [...prev, { 
-                        role: 'assistant', 
-                        content: finalResponse.data.content[0].text
-                      }]);
-                    } else {
-                      throw new Error(finalResponse.error || 'Error getting final response');
-                    }
-                  }).catch(error => {
-                    console.error('Error getting final response:', error);
-                    setMessages(prev => [...prev, {
-                      role: 'system',
-                      content: `Error getting final response: ${error.message}`
-                    }]);
-                  }).finally(() => {
-                    setIsLoading(false);
                   });
+                  
+                  // Set a timeout in case the final response takes too long
+                  const timeoutPromise = new Promise((_, reject) => {
+                    timeoutRef.current = setTimeout(() => {
+                      reject(new Error('Final response timed out after 30 seconds'));
+                    }, 30000);
+                  });
+                  
+                  Promise.race([finalPromise, timeoutPromise])
+                    .then(finalResponse => {
+                      console.log('=== FINAL CLAUDE RESPONSE FULL ===', finalResponse);
+                      
+                      if (timeoutRef.current) {
+                        clearTimeout(timeoutRef.current);
+                      }
+                      
+                      if (finalResponse.success && finalResponse.data) {
+                        try {
+                          if (finalResponse.data.content && Array.isArray(finalResponse.data.content)) {
+                            // Add each content block as a separate message
+                            const newMessages = [...prev];
+                            
+                            finalResponse.data.content.forEach(block => {
+                              let blockContent = '';
+                              if (block.type === 'text') {
+                                blockContent = block.text;
+                              } else {
+                                blockContent = JSON.stringify(block);
+                              }
+                              
+                              newMessages.push({
+                                role: 'assistant',
+                                content: blockContent
+                              });
+                            });
+                            
+                            return newMessages;
+                          } else if (finalResponse.data.content) {
+                            // Fallback for single content
+                            return [...prev, {
+                              role: 'assistant',
+                              content: typeof finalResponse.data.content === 'string' 
+                                ? finalResponse.data.content 
+                                : JSON.stringify(finalResponse.data.content)
+                            }];
+                          } else if (finalResponse.data.text) {
+                            // Legacy API format
+                            return [...prev, {
+                              role: 'assistant',
+                              content: finalResponse.data.text
+                            }];
+                          } else {
+                            // Last resort
+                            return [...prev, {
+                              role: 'assistant',
+                              content: JSON.stringify(finalResponse.data)
+                            }];
+                          }
+                        } catch (err) {
+                          console.error('Error extracting content:', err);
+                          throw new Error(`Error parsing response: ${err.message}`);
+                        }
+                      } else {
+                        throw new Error(finalResponse.error || 'Error getting final response');
+                      }
+                    }).catch(error => {
+                      console.error('Error getting final response:', error);
+                      setMessages(prev => [...prev, {
+                        role: 'system',
+                        content: `Error getting final response: ${error.message}`
+                      }]);
+                    }).finally(() => {
+                      setIsLoading(false);
+                    });
                 }).catch(error => {
                   console.error('Error calling tool:', error);
                   setMessages(prev => [...prev, {
@@ -403,7 +490,23 @@ const ChatClient = () => {
         {messages.map((msg, index) => (
           <div key={index} className={`message ${msg.role}`}>
             <div className="message-header">{msg.role}</div>
-            <div className="message-content">{msg.content}</div>
+            <div className="message-content">
+              {(() => {
+                try {
+                  if (typeof msg.content === 'string') {
+                    return msg.content;
+                  } else if (Array.isArray(msg.content)) {
+                    return msg.content.map((item, i) => 
+                      <div key={i}>{JSON.stringify(item, null, 2)}</div>
+                    );
+                  } else {
+                    return JSON.stringify(msg.content, null, 2);
+                  }
+                } catch (err) {
+                  return `[Error displaying content: ${err.message}]`;
+                }
+              })()}
+            </div>
           </div>
         ))}
         <div ref={messagesEndRef} />

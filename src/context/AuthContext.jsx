@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { auth, loginWithEmail, loginWithGoogle, registerWithEmail, logoutUser } from '../services/firebase';
-import { syncUserProfile } from '../services/api';
+// import { syncUserProfile } from '../services/api';
 
 // Initialize context
 const AuthContext = createContext();
@@ -10,8 +10,8 @@ export function useAuth() {
 }
 
 export function AuthProvider({ children }) {
-  const [currentUser, setCurrentUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [currentUser, setCurrentUser] = useState(auth.currentUser);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   // Handle auth errors
@@ -33,7 +33,8 @@ export function AuthProvider({ children }) {
       setError('');
       const userCredential = await loginWithEmail(email, password);
       const token = await userCredential.user.getIdToken();
-      await window.electronAuth.setAuthToken(token);
+      // Skip electronAuth call for testing
+      // await window.electronAuth.setAuthToken(token);
       trackLogin('email');
       return true;
     } catch (err) {
@@ -51,7 +52,8 @@ export function AuthProvider({ children }) {
       setError('');
       const userCredential = await loginWithGoogle();
       const token = await userCredential.user.getIdToken();
-      await window.electronAuth.setAuthToken(token);
+      // Skip electronAuth call for testing
+      // await window.electronAuth.setAuthToken(token);
       trackLogin('google');
       return true;
     } catch (err) {
@@ -69,7 +71,8 @@ export function AuthProvider({ children }) {
       setError('');
       const userCredential = await registerWithEmail(email, password);
       const token = await userCredential.user.getIdToken();
-      await window.electronAuth.setAuthToken(token);
+      // Skip electronAuth call for testing
+      // await window.electronAuth.setAuthToken(token);
       trackLogin('registration');
       return true;
     } catch (err) {
@@ -84,7 +87,8 @@ export function AuthProvider({ children }) {
   const logout = async () => {
     try {
       await logoutUser();
-      await window.electronAuth.clearAuthToken();
+      // Skip electronAuth call for testing
+      // await window.electronAuth.clearAuthToken();
       setCurrentUser(null);
       return true;
     } catch (err) {
@@ -93,13 +97,12 @@ export function AuthProvider({ children }) {
     }
   };
 
-  // Sync with backend
+  // Mock sync with backend
   const syncUser = async (user) => {
     if (user) {
       try {
-        const { data } = await syncUserProfile();
-        // Store additional user data if needed
-        return data;
+        // Mocked user profile data
+        return { name: user.displayName, email: user.email };
       } catch (err) {
         console.error('Error syncing user profile:', err);
       }
@@ -107,19 +110,11 @@ export function AuthProvider({ children }) {
     return null;
   };
 
-  // Listen for auth state changes
+  // Set mock user immediately
   useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged(async (user) => {
-      setCurrentUser(user);
-      if (user) {
-        const token = await user.getIdToken();
-        await window.electronAuth.setAuthToken(token);
-        await syncUser(user);
-      }
-      setLoading(false);
-    });
-
-    return unsubscribe;
+    setCurrentUser(auth.currentUser);
+    setLoading(false);
+    // No need for unsubscribe as we're not using real Firebase auth
   }, []);
 
   const value = {
@@ -135,7 +130,7 @@ export function AuthProvider({ children }) {
 
   return (
     <AuthContext.Provider value={value}>
-      {!loading && children}
+      {children}
     </AuthContext.Provider>
   );
 } 

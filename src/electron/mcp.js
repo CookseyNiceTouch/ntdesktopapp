@@ -152,13 +152,15 @@ export function setupMCPHandlers() {
   // Call a tool on an MCP server
   ipcMain.handle('mcp:callTool', async (event, { clientId, name, args }) => {
     try {
-      console.log(`[MAIN] Calling tool ${name} with args:`, args);
+      console.log(`[MAIN] Received tool call request for ${name}`);
       
       // Get the client
       const client = activeClients.get(clientId);
       if (!client) {
         throw new Error(`No MCP client found with ID: ${clientId}`);
       }
+      
+      console.log(`[MAIN] Found client with ID ${clientId}, calling tool...`);
       
       // Call the tool with timeout to prevent hanging
       const toolPromise = client.callTool({
@@ -172,7 +174,7 @@ export function setupMCPHandlers() {
       
       const result = await Promise.race([toolPromise, timeoutPromise]);
       
-      console.log(`[MAIN] Tool result:`, result);
+      console.log(`[MAIN] Tool execution completed, result:`, result);
       
       return { 
         success: true, 
