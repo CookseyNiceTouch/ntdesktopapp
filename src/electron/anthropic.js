@@ -28,6 +28,22 @@ export function setupAnthropicHandlers() {
       }
       
       console.log('[MAIN] Creating message with model:', options.model);
+      console.log('[MAIN] Message options:', {
+        model: options.model,
+        max_tokens: options.max_tokens,
+        system: options.system,
+        messageCount: options.messages.length,
+        hasTools: !!options.tools,
+        toolCount: options.tools?.length || 0
+      });
+      
+      // Print tool definitions if present
+      if (options.tools && options.tools.length > 0) {
+        console.log('[MAIN] Tool definitions:', options.tools.map(tool => ({
+          name: tool.name,
+          description: tool.description?.substring(0, 50) + (tool.description?.length > 50 ? '...' : '')
+        })));
+      }
       
       // Ensure message format is correct
       if (!options.messages || !Array.isArray(options.messages) || options.messages.length === 0) {
@@ -46,6 +62,21 @@ export function setupAnthropicHandlers() {
       
       const endTime = Date.now();
       console.log(`[MAIN] Message created successfully. Time: ${endTime - startTime}ms`);
+      
+      // Log response content type information
+      if (response.content && response.content.length > 0) {
+        console.log('[MAIN] Response content types:', response.content.map(item => item.type));
+        
+        // Log tool usage if present
+        const toolUses = response.content.filter(item => item.type === 'tool_use');
+        if (toolUses.length > 0) {
+          console.log('[MAIN] Tool uses in response:', toolUses.map(tool => ({
+            id: tool.id,
+            name: tool.name,
+            input: tool.input
+          })));
+        }
+      }
       
       return { success: true, data: response };
     } catch (error) {

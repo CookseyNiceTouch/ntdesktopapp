@@ -122,6 +122,7 @@ const ChatClient = () => {
       // Extract tool info
       const toolName = toolCall.name;
       const toolArgs = toolCall.arguments || {};
+      const toolId = toolCall.id || `tool_${Date.now()}`;
       
       // Add "tool calling" message
       addMessage({
@@ -130,57 +131,98 @@ const ChatClient = () => {
         id: uuidv4()
       });
       
-      // Call the tool via the MCP client
-      const result = await window.electronMCP.callTool({
-        clientId: mcpClientRef.current.clientId,
-        toolName: toolName,
-        arguments: toolArgs
-      });
-      
-      console.log('Tool call result:', result);
-      
-      if (!result.success) {
-        throw new Error(result.error || 'Unknown error calling tool');
+      try {
+        // Call the tool via the MCP client
+        const result = await window.electronMCP.callTool({
+          clientId: mcpClientRef.current.clientId,
+          toolName: toolName,
+          arguments: toolArgs
+        });
+        
+        console.log('Tool call result:', result);
+        
+        let toolResponse;
+        
+        if (!result.success) {
+          throw new Error(result.error || 'Unknown error calling tool');
+        }
+        
+        // Format response based on the result structure
+        if (result.result && result.result.content) {
+          // Handle array of content blocks (standard MCP response)
+          if (Array.isArray(result.result.content)) {
+            // Find the first text block
+            const textBlock = result.result.content.find(item => item.type === 'text');
+            if (textBlock) {
+              // If we have a text block, use it directly
+              toolResponse = textBlock.text;
+            } else {
+              // Otherwise stringify the content
+              toolResponse = JSON.stringify(result.result.content);
+            }
+          } else {
+            // Handle non-array content
+            toolResponse = typeof result.result.content === 'string' ? 
+              result.result.content : JSON.stringify(result.result.content);
+          }
+        } else if (typeof result.result === 'string') {
+          // Handle string response
+          toolResponse = result.result;
+        } else {
+          // Handle JSON response - stringify it
+          toolResponse = JSON.stringify(result.result);
+        }
+        
+        console.log('Normalized tool response:', toolResponse);
+        
+        // Add tool response message
+        addMessage({
+          role: 'tool',
+          name: toolName,
+          content: toolResponse,
+          id: uuidv4(),
+          toolId: toolId
+        });
+        
+        return {
+          success: true,
+          toolName: toolName,
+          toolId: toolId,
+          content: toolResponse
+        };
+      } catch (error) {
+        console.error('Error processing tool call:', error);
+        
+        // Create an error response
+        const errorResponse = `Error: ${error.message}`;
+        
+        console.log('Error response:', errorResponse);
+        
+        // Add error message as a tool message
+        addMessage({
+          role: 'tool',
+          name: toolName,
+          content: errorResponse,
+          id: uuidv4(),
+          toolId: toolId,
+          error: true
+        });
+        
+        return {
+          success: false,
+          toolName: toolName,
+          toolId: toolId,
+          content: errorResponse,
+          error: error.message
+        };
       }
-      
-      let toolResponse;
-      
-      // Format response based on the result structure
-      if (result.result && result.result.content) {
-        // Handle array of content blocks (standard MCP response)
-        toolResponse = result.result.content;
-      } else if (typeof result.result === 'string') {
-        // Handle string response
-        toolResponse = [{ type: 'text', text: result.result }];
-      } else {
-        // Handle JSON response - stringify it
-        toolResponse = [{ 
-          type: 'text', 
-          text: JSON.stringify(result.result, null, 2) 
-        }];
-      }
-      
-      // Add tool response message
-      addMessage({
-        role: 'tool',
-        name: toolName,
-        content: toolResponse,
-        id: uuidv4()
-      });
-      
-      return {
-        success: true,
-        toolName: toolName,
-        content: toolResponse
-      };
-      
     } catch (error) {
-      console.error('Error processing tool call:', error);
+      console.error('Error setting up tool call:', error);
       
-      // Add error message
+      // Add system error message
       addMessage({
-        role: 'tool',
-        content: `Error calling tool: ${error.message}`,
+        role: 'system',
+        content: `Error: ${error.message}`,
         id: uuidv4()
       });
       
@@ -297,68 +339,115 @@ const ChatClient = () => {
           .filter(item => item.type === 'tool_use')
           .map(item => ({
             name: item.name,
-            arguments: item.input
+            arguments: item.input,
+            id: item.id
           }));
         
         console.log('Found tool calls in response:', toolCalls);
         
         // Add assistant message with tool calls
+        const assistantMsgId = uuidv4();
         addMessage({
-          id: uuidv4(),
+          id: assistantMsgId,
           role: 'assistant',
           content: response.data.content
         });
         
-        // Process each tool call
+        // Process each tool call and collect results
+        const toolResults = [];
+        console.log(`Processing ${toolCalls.length} tool calls...`);
         for (const toolCall of toolCalls) {
-          await processToolCall(toolCall);
+          console.log(`Processing tool call: ${toolCall.name} with ID: ${toolCall.id}`);
+          const result = await processToolCall(toolCall);
+          console.log(`Tool call result for ${toolCall.name}:`, result);
+          toolResults.push(result);
         }
         
-        // After tool calls are processed, follow up with Claude
-        const toolResults = messages
-          .filter(msg => msg.role === 'tool')
-          .slice(-toolCalls.length * 2); // Get recent tool messages
+        console.log(`All ${toolResults.length} tool calls completed`);
+        
+        // Create follow-up message with proper tool_result blocks
+        const followUpMessages = [
+          ...conversationHistory,
+          { role: 'user', content: query },
+          { 
+            role: 'assistant',
+            content: response.data.content
+          }
+        ];
+        
+        // Add each tool result with proper formatting
+        toolResults.forEach(result => {
+          // Log the raw result structure to debug
+          console.log('Raw tool result structure:', JSON.stringify(result, null, 2));
+          
+          // Extract the actual content to avoid extra nesting
+          let actualResult;
+          if (result.error) {
+            // For error responses, use the error message directly
+            actualResult = result.error;
+          } else if (Array.isArray(result.content)) {
+            // Get the text content from the first text block if available
+            const textBlock = result.content.find(c => c.type === 'text');
+            actualResult = textBlock ? textBlock.text : JSON.stringify(result.content);
+          } else if (typeof result.content === 'string') {
+            actualResult = result.content;
+          } else {
+            actualResult = JSON.stringify(result.content);
+          }
+          
+          console.log('Formatted tool result:', {
+            toolId: result.toolId,
+            actualResult,
+            actualResultType: typeof actualResult
+          });
+          
+          // Create the tool result message with the direct string
+          const toolResultMessage = {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: result.toolId,
+                tool_result: actualResult
+              }
+            ]
+          };
+          
+          // Log the exact message we're adding to verify structure
+          console.log('Tool result message structure:', JSON.stringify(toolResultMessage, null, 2));
+          
+          followUpMessages.push(toolResultMessage);
+        });
+        
+        // Log full message contents for debugging
+        console.log('Follow-up messages structure:', JSON.stringify(followUpMessages, null, 2));
+        
+        // Final validation to ensure no nested tool_result objects
+        followUpMessages.forEach(msg => {
+          if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+            msg.content.forEach(contentItem => {
+              if (contentItem.type === 'tool_result') {
+                // Check for nested objects in tool_result
+                if (typeof contentItem.tool_result === 'object' && contentItem.tool_result !== null) {
+                  console.warn('Found nested object in tool_result, flattening:', contentItem.tool_result);
+                  
+                  // If tool_result is an object, stringify it
+                  contentItem.tool_result = JSON.stringify(contentItem.tool_result);
+                }
+                
+                // Verify the tool_result is a primitive type (string, number, boolean)
+                console.log(`Validated tool_result (${typeof contentItem.tool_result}):`, contentItem.tool_result);
+              }
+            });
+          }
+        });
         
         // Create follow-up message
         const followUpOptions = {
           model: "claude-3-5-haiku-20241022",
           max_tokens: 1000,
           system: systemMessage,
-          messages: [
-            ...conversationHistory,
-            { role: 'user', content: query },
-            { 
-              role: 'assistant',
-              content: response.data.content
-            },
-            ...toolResults.map(msg => {
-              if (typeof msg.content === 'string') {
-                return {
-                  role: 'assistant',
-                  content: [
-                    {
-                      type: 'tool_result',
-                      tool_name: msg.name || 'unknown',
-                      tool_result: msg.content
-                    }
-                  ]
-                };
-              } else {
-                return {
-                  role: 'assistant',
-                  content: [
-                    {
-                      type: 'tool_result',
-                      tool_name: msg.name || 'unknown',
-                      tool_result: Array.isArray(msg.content) 
-                        ? msg.content.find(c => c.type === 'text')?.text || JSON.stringify(msg.content)
-                        : JSON.stringify(msg.content)
-                    }
-                  ]
-                };
-              }
-            })
-          ],
+          messages: followUpMessages,
           stream: false,
           // Include tools in follow-up
           ...(isConnected && availableTools.length > 0 ? {
@@ -370,6 +459,8 @@ const ChatClient = () => {
           } : {})
         };
         
+        // Log full message contents for debugging
+        console.log('Follow-up messages structure:', JSON.stringify(followUpMessages, null, 2));
         console.log('Sending follow-up request:', JSON.stringify(followUpOptions, null, 2));
         
         // Send follow-up request to Claude
