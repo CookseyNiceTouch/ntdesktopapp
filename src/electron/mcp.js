@@ -183,6 +183,63 @@ export function setupMCPHandlers() {
       };
     }
   });
+
+  // Call a tool on an MCP server
+  ipcMain.handle('mcp:callTool', async (event, { clientId, toolName, arguments: toolArgs }) => {
+    try {
+      console.log(`[MAIN] Calling MCP tool: ${toolName} with arguments:`, toolArgs);
+      
+      // Validate request
+      if (!clientId) {
+        throw new Error('Client ID is required');
+      }
+      
+      if (!toolName) {
+        throw new Error('Tool name is required');
+      }
+      
+      // Get the client
+      const client = activeClients.get(clientId);
+      if (!client) {
+        throw new Error(`MCP client not found with ID: ${clientId}`);
+      }
+      
+      // Call the tool with a timeout to prevent hanging
+      console.log(`[MAIN] Executing tool ${toolName}...`);
+      
+      const callPromise = client.callTool(toolName, toolArgs || {});
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error(`Tool call to '${toolName}' timed out`)), 30000)
+      );
+      
+      const result = await Promise.race([callPromise, timeoutPromise]);
+      
+      console.log(`[MAIN] Tool ${toolName} executed successfully:`, result);
+      
+      return { 
+        success: true, 
+        result: result
+      };
+    } catch (error) {
+      console.error(`[MAIN] Error calling MCP tool ${toolName}:`, error);
+      
+      // Provide helpful error messages
+      let errorMessage = error.message || error.toString();
+      
+      if (errorMessage.includes('not found')) {
+        errorMessage = `Tool '${toolName}' not found on the server. Check the tool name and server configuration.`;
+      } else if (errorMessage.includes('timed out')) {
+        errorMessage = `Tool call timed out. The tool execution may be taking too long or the server may be unresponsive.`;
+      } else if (errorMessage.includes('invalid arguments')) {
+        errorMessage = `Invalid arguments for tool '${toolName}'. Check the required parameters.`;
+      }
+      
+      return { 
+        success: false, 
+        error: errorMessage 
+      };
+    }
+  });
 }
 
 // Cleanup function to close all clients on app exit

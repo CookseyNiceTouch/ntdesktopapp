@@ -35,5 +35,12 @@ contextBridge.exposeInMainWorld('electronMCP', {
   closeClient: (options) => {
     console.log('[PRELOAD] Closing MCP client:', options);
     return ipcRenderer.invoke('mcp:closeClient', options);
+  },
+  callTool: (options) => {
+    console.log('[PRELOAD] Calling MCP tool:', {
+      clientId: options.clientId,
+      toolName: options.toolName
+    });
+    return ipcRenderer.invoke('mcp:callTool', options);
   }
 });
