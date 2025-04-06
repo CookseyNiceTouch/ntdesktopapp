@@ -157,46 +157,6 @@ export function setupMCPHandlers() {
     }
   });
   
-  // Call a tool on an MCP server
-  ipcMain.handle('mcp:callTool', async (event, { clientId, name, args }) => {
-    try {
-      console.log(`[MAIN] Received tool call request for ${name}`);
-      
-      // Get the client
-      const client = activeClients.get(clientId);
-      if (!client) {
-        throw new Error(`No MCP client found with ID: ${clientId}`);
-      }
-      
-      console.log(`[MAIN] Found client with ID ${clientId}, calling tool...`);
-      
-      // Call the tool with timeout to prevent hanging
-      const toolPromise = client.callTool({
-        name,
-        arguments: args,
-      });
-      
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Tool call timed out')), 30000)
-      );
-      
-      const result = await Promise.race([toolPromise, timeoutPromise]);
-      
-      console.log(`[MAIN] Tool execution completed, result:`, result);
-      
-      return { 
-        success: true, 
-        result 
-      };
-    } catch (error) {
-      console.error(`[MAIN] Error calling tool ${name}:`, error);
-      return { 
-        success: false, 
-        error: error.message || error.toString() 
-      };
-    }
-  });
-  
   // Close an MCP client
   ipcMain.handle('mcp:closeClient', async (event, { clientId }) => {
     try {
