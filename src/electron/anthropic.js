@@ -142,4 +142,21 @@ export function setupAnthropicHandlers() {
       });
     }
   });
+
+  // Enhance streaming support for thinking states
+  ipcMain.on('anthropic:streamThinking', async (event, options, messageId) => {
+    try {
+      // Setup stream with thinking mode enabled
+      const stream = await anthropicClient.messages.stream({
+        ...options,
+        stream: true,
+        thinking: true // Hypothetical flag for getting thinking states
+      });
+      
+      // Handle different stream events for thinking, content progression, etc.
+    } catch (error) {
+      console.error(`[MAIN] Error in thinking stream:`, error);
+      event.sender.send(`anthropic:stream:${messageId}:error`, { error: error.message });
+    }
+  });
 } 

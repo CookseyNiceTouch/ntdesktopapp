@@ -71,22 +71,30 @@ export function setupMCPHandlers() {
         command,
         args,
         // Use shell on Windows to ensure command resolution
-        shell: process.platform === 'win32'
+        shell: process.platform === 'win32',
+        // Add detailed debug logging
+        onStdErr: (data) => {
+          console.error(`[MAIN] Server stderr: ${data.toString()}`);
+        },
+        onError: (error) => {
+          console.error(`[MAIN] Transport error: ${error.message}`);
+        }
       });
       
       // Connect to server with better error handling
       console.log(`[MAIN] Connecting to MCP server...`);
       mcp.connect(transport);
       
-      // Wait for connection to establish
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // Wait for connection to establish - increase timeout from 1000ms to 5000ms
+      console.log(`[MAIN] Waiting for connection to establish...`);
+      await new Promise(resolve => setTimeout(resolve, 5000));
       
       console.log(`[MAIN] MCP client connected, retrieving tools...`);
       
-      // List available tools with timeout to prevent hanging
+      // List available tools with timeout to prevent hanging - increase from 5000ms to 10000ms
       const toolsPromise = mcp.listTools();
       const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Tool listing timed out')), 5000)
+        setTimeout(() => reject(new Error('Tool listing timed out')), 10000)
       );
       
       const toolsResult = await Promise.race([toolsPromise, timeoutPromise]);
